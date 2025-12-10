@@ -1,93 +1,49 @@
-import http from "http";
-import https from "https";
-import url from "url";
+import express from "express";
+import fetch from "node-fetch";
+import cors from "cors";
+import URL from "url";
 
-const PORT = process.env.PORT || 3000;
+const app = express();
+app.use(cors());
 
-function rewriteM3U8(content, baseUrl, proxyBase) {
-  const lines = content.split("\n");
-  const out = [];
+app.get("/", async (req, res) => {
+    const target = req.query.url;
+    if (!target) return res.status(400).send("Falta ?url=");
 
-  for (let line of lines) {
-    const trimmed = line.trim();
+    try {
+        const resp = await fetch(target);
+        const contentType = resp.headers.get("content-type") || "";
 
-    // Líneas que no son URLs
-    if (
-      trimmed.startsWith("#") ||
-      trimmed === ""
-    ) {
-      out.push(trimmed);
-      continue;
+        // Si es M3U8, reescribimos rutas relativas
+        if (contentType.includes("application") && contentType.includes("mpeg")) {
+            let text = await resp.text();
+
+            const base = target.substring(0, target.lastIndexOf("/") + 1);
+
+            // Reescribe las rutas .ts
+            text = text.replace(/(.*\.ts)/g, (match) => {
+                // Absolutas = no tocar
+                if (match.startsWith("http://") || match.startsWith("https://")) return match;
+
+                // Relativas → pasarlas por el proxy
+                const tsURL = base + match;
+                return `${req.protocol}://${req.get("host")}/?url=${encodeURIComponent(tsURL)}`;
+            });
+
+            res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+            return res.send(text);
+        }
+
+        // Si no es m3u8, devolvemos binario (TS, imágenes, etc.)
+        const buffer = await resp.arrayBuffer();
+        res.setHeader("Content-Type", contentType);
+        res.send(Buffer.from(buffer));
+
+    } catch (err) {
+        res.status(500).send("Error: " + err.message);
     }
-
-    // Si es URL absoluta → No reescribir
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-      out.push(`${proxyBase}?url=${encodeURIComponent(trimmed)}`);
-      continue;
-    }
-
-    // Es relativa → convertir a absoluta usando baseUrl
-    const absoluteUrl = new URL(trimmed, baseUrl).toString();
-
-    // Pasarla por el proxy también
-    out.push(`${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`);
-  }
-
-  return out.join("\n");
-}
-
-http.createServer((req, res) => {
-  const parsed = url.parse(req.url, true);
-  let target = parsed.query.url;
-
-  if (!target) {
-    res.writeHead(400);
-    return res.end("Falta ?url=");
-  }
-
-  const proxyBase = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
-  console.log("Proxy:", target);
-
-  const client = target.startsWith("https://") ? https : http;
-
-  client.get(
-    target,
-    {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Android 11)",
-        "Accept": "*/*",
-      },
-    },
-    (resp) => {
-      const type = resp.headers["content-type"] || "";
-
-      // Si es M3U8, reescribirlo
-      if (type.includes("application/vnd.apple.mpegurl") || target.endsWith(".m3u8")) {
-        let data = "";
-        resp.on("data", (chunk) => (data += chunk));
-        resp.on("end", () => {
-          const rewritten = rewriteM3U8(
-            data,
-            target,
-            proxyBase
-          );
-
-          res.writeHead(200, {
-            "Content-Type": "application/vnd.apple.mpegurl",
-          });
-          res.end(rewritten);
-        });
-        return;
-      }
-
-      // Si NO es m3u8 → pasar bytes (segmentos TS, AAC, JPG...)
-      res.writeHead(resp.statusCode, resp.headers);
-      resp.pipe(res);
-    }
-  ).on("error", (err) => {
-    res.writeHead(500);
-    res.end("Error: " + err.toString());
-  });
-}).listen(PORT, () => {
-  console.log("Proxy HLS activo en puerto", PORT);
 });
+
+// puerto dinámico para Koyeb
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server ON " + PORT));
