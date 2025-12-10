@@ -1,62 +1,58 @@
-import express from "express";
-import fetch from "node-fetch";
-import cors from "cors";
+import express from 'express';
+import fetch from 'node-fetch';
+import cors from 'cors';
+import url from 'url';
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Habilitar CORS para todas las fuentes
 app.use(cors());
 
-app.get("/", async (req, res) => {
-    const target = req.query.url;
-    if (!target) return res.status(400).send("Falta ?url=");
+// Proxy HLS
+app.get('/', async (req, res) => {
+    const m3u8Url = req.query.url;
+    if (!m3u8Url) return res.status(400).send('Falta parámetro ?url=');
 
     try {
-        const resp = await fetch(target, {
-            headers: {
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "*/*"
-            }
+        const response = await fetch(m3u8Url);
+        if (!response.ok) return res.status(500).send('Error al obtener M3U8');
+
+        let text = await response.text();
+
+        // Reescribir rutas relativas de .ts a través del proxy
+        // Solo si no comienzan con http:// o https://
+        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+        text = text.replace(/^(?!#)(.+\.ts)$/gm, (match) => {
+            const absolute = url.resolve(baseUrl, match);
+            return `${req.protocol}://${req.get('host')}/?url=${absolute}`;
         });
 
-        const contentType = resp.headers.get("content-type") || "";
-
-        // Si es M3U8 → reescribir rutas
-        if (contentType.includes("mpegurl") || contentType.includes("mpeg")) {
-            let text = await resp.text();
-
-            // BASE URL del m3u8 original
-            const base = target.substring(0, target.lastIndexOf("/") + 1);
-            const proxyBase = `${req.protocol}://${req.get("host")}/?url=`;
-
-            // Reescribir solo archivos .ts (relativos)
-            text = text.replace(/^(?!#)(.*\.ts.*)$/gm, line => {
-                line = line.trim();
-
-                // Si ya es absoluta → no toca
-                if (line.startsWith("http://") || line.startsWith("https://"))
-                    return line;
-
-                // Generar URL absoluta original
-                const absolute = base + line;
-
-                // Pasar por el proxy
-                return proxyBase + encodeURIComponent(absolute);
-            });
-
-            res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-            return res.send(text);
-        }
-
-        // Si NO es m3u8 → devolver binario (segmentos TS)
-        const buffer = Buffer.from(await resp.arrayBuffer());
-        res.setHeader("Content-Type", contentType);
-        return res.send(buffer);
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.send(text);
 
     } catch (err) {
-        return res.status(500).send("Proxy error: " + err.message);
+        console.error(err);
+        res.status(500).send('Error en el proxy HLS');
     }
 });
 
-// Puerto dinámico para Koyeb
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Proxy HLS activo en puerto " + PORT));
+// Proxy para cualquier archivo (segmentos .ts)
+app.get('*', async (req, res) => {
+    const fileUrl = req.query.url;
+    if (!fileUrl) return res.status(400).send('Falta parámetro ?url=');
 
+    try {
+        const response = await fetch(fileUrl);
+        if (!response.ok) return res.status(500).send('Error al obtener el archivo');
+        res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
+        response.body.pipe(res);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Error en el proxy de archivos');
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`Proxy HLS listo en puerto ${PORT}`);
+});
