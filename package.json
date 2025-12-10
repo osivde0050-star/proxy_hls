@@ -1,18 +1,9 @@
 {
   "name": "koyeb-hls-proxy",
   "version": "1.0.0",
-  "description": "Proxy HLS universal para M3U8 con rutas relativas y absolutas",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "cors": "^2.8.5"
   }
 }
